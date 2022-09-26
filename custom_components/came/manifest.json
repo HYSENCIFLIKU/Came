@@ -1,0 +1,17 @@
+{
+  "domain": "came",
+  "name": "Came Eti Domo",
+  "config_flow": true,
+  "documentation": "https://github.com/PiotrMachowski/eti_domo-hass-integration",
+  "issue_tracker": "https://github.com/PiotrMachowski/eti_domo-hass-integration/issues",
+  "requirements": [],
+  "ssdp": [],
+  "zeroconf": [],
+  "homekit": {},
+  "dependencies": [],
+  "codeowners": [
+    "@andrea-michielan",
+    "@PiotrMachowski"
+  ],
+  "version": "v0.0.2"
+}
