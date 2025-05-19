@@ -13,5 +13,6 @@
     "@andrea-michielan",
     "@PiotrMachowski"
   ],
-  "version": "v0.0.2"
+  "version": "v0.0.2",
+  "min_homeassistant_core_version": "2023.12.0"
 }
