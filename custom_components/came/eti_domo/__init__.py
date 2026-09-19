@@ -1,376 +1,78 @@
-"""Copy of https://github.com/andrea-michielan/eti_domo/ with added fixes"""
-
+"""ETI/Domo client for CAME integration."""
+from __future__ import annotations
+import logging, threading
+from typing import Callable
 import requests
-
-
-class RequestError(Exception):
-    """ Raised when a user send an invalid request to the server """
-    pass
-
-
-class ServerNotFound(Exception):
-    """ Raised when the specified host is not available """
-    pass
-
-
-class CommandNotFound(Exception):
-    """ Raised if the user tries to send a command to the server that does not exists """
-    pass
-
-
+_LOGGER=logging.getLogger(__name__)
+TIMEOUT=10
+class RequestError(Exception): pass
+class ServerNotFound(Exception): pass
+class CommandNotFound(Exception): pass
 class Domo:
-    # Header for every http request made to the server
-    header = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Connection": "Keep-Alive"
-    }
-
-    # Dictionary of available commands
-    available_commands = {
-        "update": "status_update_req",
-        "relays": "relays_list_req",
-        "cameras": "tvcc_cameras_list_req",
-        "timers": "timers_list_req",
-        "thermoregulation": "thermo_list_req",
-        "analogin": "analogin_list_req",
-        "digitalin": "digitalin_list_req",
-        "lights": "nested_light_list_req",
-        "features": "feature_list_req",
-        "users": "sl_users_list_req",
-        "maps": "map_descr_req",
-        "scenarios": "scenario_activation_req",
-        "openings": "openings_list_req"
-    }
-
-    # Dictionary of seasons available
-    seasons = {
-        "off": "plant_off",
-        "winter": "winter",
-        "summer": "summer"
-    }
-
-    # Dictionary of thermo zone status
-    thermo_status = {
-        0: "off",
-        1: "man",
-        2: "auto",
-        3: "jolly"
-    }
-
-    # Dictionary of opening actions
-    opening_actions = {
-        "stop": 0,
-        "open": 1,
-        "close": 2
-    }
-
-    def __init__(self, host: str):
-        """
-        Instantiate a new :class:`Object` of type :class:`Domo` that communicates with an Eti/Domo server at the specified ip address
-
-        :param host: A string representing the ip address of the Eti/Domo server
-        :raises :class:`ServerNotFound`: if the :param:`host` is not available
-        """
-
-        # Wrap the host ip in a http url
-        self._host = "http://" + host + "/domo/"
-        # The sequence start from 1
-        self._cseq = 1
-        # Session id for the client
-        self.id = ""
-
-        # List of items managed by the server
-        self.items = {}
-
-        # Check if the host is available
-        response = requests.get(self._host, headers=self.header)
-
-        # If not then raise an exception
-        if not response.status_code == 200:
-            self._host = ""
-            raise ServerNotFound
-
-    def login(self, username: str, password: str):
-        """
-        Method that takes in the username and password and attempt a login to the server.
-        If the login is correct, then the ``id`` parameter of the object :class:`Domo` will be set to the session id given by the server.
-
-        :param username: username of the user
-        :param password: password of the user
-        :return: ``<None>``
-        """
-
-        # Create the login request
-        login_parameters = 'command={"sl_cmd":"sl_registration_req","sl_login":"' + str(
-            username) + '","sl_pwd":"' + str(password) + '"}'
-
-        # Send the post request with the login parameters
-        response = requests.post(self._host, params=login_parameters, headers=self.header)
-
-        # Set the client id for the session
-        self.id = response.json()['sl_client_id']
-
-        # Check if the user is authorized
-        if not response.json()['sl_data_ack_reason'] == 0:
-            return False
-
-        return True
-
-    def keep_alive(self):
-
-        parameters = 'command={"sl_client_id":"' + self.id + '","sl_cmd":"sl_keep_alive_req"}'
-
-        # Send the post request with the login parameters
-        response = requests.post(self._host, params=parameters, headers=self.header)
-
-        return response.json()['sl_data_ack_reason'] == 0
-
+    header={"Content-Type":"application/x-www-form-urlencoded","Connection":"Keep-Alive"}
+    available_commands={"update":"status_update_req","relays":"relays_list_req","cameras":"tvcc_cameras_list_req","timers":"timers_list_req","thermoregulation":"thermo_list_req","analogin":"analogin_list_req","digitalin":"digitalin_list_req","lights":"nested_light_list_req","features":"feature_list_req","users":"sl_users_list_req","maps":"map_descr_req","scenarios":"scenario_activation_req","openings":"openings_list_req"}
+    seasons={"off":"plant_off","winter":"winter","summer":"summer"}
+    thermo_status={0:"off",1:"man",2:"auto",3:"jolly"}
+    opening_actions={"stop":0,"open":1,"close":2}
+    def __init__(self,host:str):
+        self._host="http://"+host+"/domo/"; self._cseq=1; self.id=""; self._username=None; self._password=None
+        self._lock=threading.RLock(); self._session=requests.Session(); self.items={}
+        try: response=self._session.get(self._host,headers=self.header,timeout=TIMEOUT)
+        except requests.RequestException as err: self._host=""; raise ServerNotFound from err
+        if response.status_code!=200: self._host=""; raise ServerNotFound
+    def login(self,username:str|None=None,password:str|None=None)->bool:
+        with self._lock:
+            if username is not None:self._username=username
+            if password is not None:self._password=password
+            p='command={"sl_cmd":"sl_registration_req","sl_login":"'+str(self._username)+'","sl_pwd":"'+str(self._password)+'"}'
+            j=self._session.post(self._host,params=p,headers=self.header,timeout=TIMEOUT).json()
+            self.id=j.get("sl_client_id",""); self._cseq=1
+            if j.get("sl_data_ack_reason",-1)!=0:return False
+            return True
+    def _relogin(self)->bool:
+        if not self._username:return False
+        try:return self.login()
+        except requests.RequestException:return False
+    def keep_alive(self)->bool:
+        with self._lock:
+            p='command={"sl_client_id":"'+self.id+'","sl_cmd":"sl_keep_alive_req"}'
+            j=self._session.post(self._host,params=p,headers=self.header,timeout=TIMEOUT).json()
+            return True if j.get("sl_data_ack_reason",-1)==0 else self._relogin()
+    def _post(self,build_param:Callable[[],str],command_name:str="UNKNOWN")->dict:
+        with self._lock:
+            for attempt in (1,2):
+                j=self._session.post(self._host,params=build_param(),headers=self.header,timeout=TIMEOUT).json(); self._cseq+=1
+                ack=j.get("sl_data_ack_reason",-1)
+                if ack==0:return j
+                if attempt==1 and self._relogin():continue
+                raise RequestError(f"sl_data_ack_reason={ack}")
+        raise RequestError("ETI/Domo request failed")
     def update_lists(self):
-        """
-        Function that update the items dictionary containing all the items managed by the eti/domo server
-        """
-
-        # Get a list of available features for the user
-        features_list = self.list_request(self.available_commands['features'])['list']
-        # Populate the items dictionary containing every item of the server
-        for feature in features_list:
-            # Get the json response from the server
-            if feature in self.available_commands:
-                tmp_list = self.list_request(self.available_commands[feature])
-                # Parse the json into a more readable and useful structure
-                self.items[feature] = tmp_list
-
-    def list_request(self, cmd_name):
-        """
-        Method that send the server a request and retrieve a list of items identified by the :param:`cmd_name` parameter
-
-        :return: a json dictionary representing the response of the server
-        :raises RequestError: if the request is invalid
-        :raises CommandNotFound: if the command requested does not exists
-        """
-
-        # Check if the command exists
-        if not cmd_name in self.available_commands.values():
-            raise CommandNotFound
-
-        # If the user requested the map, then we don't need to pass the client id
-        client_id = '' if cmd_name == "map_descr_req" else '"client":"' + self.id + '",'
-
-        # If the user requested a list of users, then the parameters are different
-        sl_cmd = '"sl_cmd":"sl_users_list_req"' if cmd_name == "sl_users_list_req" else '"sl_cmd":"sl_data_req"'
-        sl_appl_msg = ('"sl_appl_msg":{'
-                       '' + client_id + ''
-                                        '"cmd_name":"' + cmd_name + '",'
-                                                                    '"cseq":' + str(self._cseq) + ''
-                                                                                                  '},'
-                                                                                                  '"sl_appl_msg_type":"domo",' if not cmd_name == "sl_users_list_req" else ''
-                       )
-
-        # Create the requests' parameters
-        param = (
-                'command={'
-                '' + sl_appl_msg + ''
-                                   '"sl_client_id":"' + self.id + '",'
-                                                                  '' + sl_cmd + ''
-                                                                                '}'
-        )
-
-        # Send the post request
-        response = requests.post(self._host, params=param, headers=self.header)
-
-        # Get a json dictionary from the response
-        response_json = response.json()
-
-        # Increment the cseq counter
-        self._cseq += 1
-
-        # Check if the response is valid
-        if not response_json['sl_data_ack_reason'] == 0:
-            raise RequestError
-
-        # Return the json of the response
-        return response_json
-
-    def switch(self, act_id: int, status: bool = True, is_light: bool = True) -> dict:
-        """
-        Method to turn on or off a light switch or a relays
-
-        :param act_id: id of the light/relay to be turned on or off
-        :param status: True if the light/relay is to be turned on, False if off
-        :param is_light: True if the item to switch is a light, False if it is a relay
-        :return: a json dictionary representing the response of the server
-        :raises RequestError: Raise a RequestError if the request is invalid
-        """
-
-        # Check if the user wants the light to be turned on or off
-        status = "1" if status else "0"
-
-        # Check if the user want to switch a light or activate a relay
-        cmd_name = "light_switch_req" if is_light else "relay_activation_req"
-
-        # Create the requests' parameters
-        param = ('command={'
-                 '"sl_appl_msg":{'
-                 '"act_id":' + str(act_id) + ','
-                                             '"client":"' + self.id + '",'
-                                                                      '"cmd_name":"' + cmd_name + '",'
-                                                                                                  '"cseq":' + str(
-            self._cseq) + ','
-                          '"wanted_status":' + status + ''
-                                                        '},'
-                                                        '"sl_appl_msg_type":"domo",'
-                                                        '"sl_client_id":"' + self.id + '",'
-                                                                                       '"sl_cmd":"sl_data_req"'
-                                                                                       '}')
-
-        # Send the post request
-        response = requests.post(self._host, params=param, headers=self.header)
-
-        # Increment the cseq counter
-        self._cseq += 1
-
-        # Check if the response is valid
-        if not response.json()['sl_data_ack_reason'] == 0:
-            raise RequestError
-
-        # After every action performed we update the list of items
-        self.update_lists()
-
-        # Return the json of the response
-        return response.json()
-
-    def thermo_mode(self, act_id: int, mode: int, temp: float) -> dict:
-        """
-        Method to change the operational mode of a thermo zone
-
-        :param act_id: id of the thermo zone to be configured
-        :param mode: 0 Turned off, 1 Manual mode, 2 Auto mode, 3 Jolly mode
-        :param temp: Temperature to set
-        :return: a json dictionary representing the response of the server
-        :raises RequestError: Raise a RequestError if the request is invalid
-        """
-
-        # Check if the mode exists
-        if mode not in [0, 1, 2, 3]:
-            raise RequestError
-
-        # Transform the temperature from float to int, we need to pass the server
-        # an integer value, which is in Celsius, but multiplied by 10
-        # we also round the float value to only 1 digits
-        value = int(round(temp * 10, 1))
-
-        # Create the requests' parameters
-        param = ('command={'
-                 '"sl_appl_msg":{'
-                 '"act_id":' + str(act_id) + ','
-                                             '"client":"' + self.id + '",'
-                                                                      '"cmd_name":"thermo_zone_config_req",'
-                                                                      '"cseq":' + str(self._cseq) + ','
-                                                                                                    '"extended_infos": 0,'
-                                                                                                    '"mode":' + str(
-            mode) + ','
-                    '"set_point":' + str(value) + ''
-                                                  '},'
-                                                  '"sl_appl_msg_type":"domo",'
-                                                  '"sl_client_id":"' + self.id + '",'
-                                                                                 '"sl_cmd":"sl_data_req"'
-                                                                                 '}')
-
-        # Send the post request
-        response = requests.post(self._host, params=param, headers=self.header)
-
-        # Increment the cseq counter
-        self._cseq += 1
-
-        # Check if the response is valid
-        if not response.json()['sl_data_ack_reason'] == 0:
-            raise RequestError
-
-        # After every action performed we update the list of items
-        self.update_lists()
-
-        # Return the json of the response
-        return response.json()
-
-    def change_season(self, season: str) -> dict:
-        """
-        Method that change the season of the entire thermo implant
-
-        :param season: string defining the season, it must be contained into the season dictionary
-        :return dict: a dictionary containing the response from the server
-        """
-
-        # Check if the season exists
-        if season not in ["plant_off", "summer", "winter"]:
-            raise RequestError
-
-        # Create the requests' parameters
-        param = ('command={'
-                 '"sl_appl_msg":{'
-                 '"client":"' + self.id + '",'
-                                          '"cmd_name":"thermo_season_req",'
-                                          '"cseq":' + str(self._cseq) + ','
-                                                                        '"season":"' + season + '"'
-                                                                                                '},'
-                                                                                                '"sl_appl_msg_type":"domo",'
-                                                                                                '"sl_client_id":"' + self.id + '",'
-                                                                                                                               '"sl_cmd":"sl_data_req"'
-                                                                                                                               '}')
-
-        # Send the post request
-        response = requests.post(self._host, params=param, headers=self.header)
-
-        # Increment the cseq counter
-        self._cseq += 1
-
-        # Check if the response is valid
-        if not response.json()['sl_data_ack_reason'] == 0:
-            raise RequestError
-
-        # After every action performed we update the list of items
-        self.update_lists()
-
-        # Return the json of the response
-        return response.json()
-
-    def opening(self, act_id: int, action: int) -> dict:
-        """
-        Method to turn on or off a light switch or a relays
-
-        :param act_id: id of the light/relay to be turned on or off
-        :param action: action that should be performed: 0-stop, 1-open, 2-close
-        :return: a json dictionary representing the response of the server
-        :raises RequestError: Raise a RequestError if the request is invalid
-        """
-
-        # Create the requests' parameters
-        param = ('command={'
-                 '"sl_appl_msg":{'
-                 '"act_id":' + str(act_id) + ','
-                                             '"client":"' + self.id + '",'
-                                                                      '"cmd_name":"opening_move_req",'
-                                                                                                  '"cseq":' + str(
-            self._cseq) + ','
-                          '"wanted_status":' + str(action) + ''
-                                                        '},'
-                                                        '"sl_appl_msg_type":"domo",'
-                                                        '"sl_client_id":"' + self.id + '",'
-                                                                                       '"sl_cmd":"sl_data_req"'
-                                                                                       '}')
-
-        # Send the post request
-        response = requests.post(self._host, params=param, headers=self.header)
-
-        # Increment the cseq counter
-        self._cseq += 1
-
-        # Check if the response is valid
-        if not response.json()['sl_data_ack_reason'] == 0:
-            raise RequestError
-
-        # After every action performed we update the list of items
-        self.update_lists()
-
-        # Return the json of the response
-        return response.json()
-
+        for feature in self.list_request(self.available_commands["features"]).get("list",[]):
+            if feature in self.available_commands:self.items[feature]=self.list_request(self.available_commands[feature])
+    def list_request(self,cmd_name:str)->dict:
+        if cmd_name not in self.available_commands.values():raise CommandNotFound
+        def build():
+            client_id="" if cmd_name=="map_descr_req" else '"client":"'+self.id+'",'
+            if cmd_name=="sl_users_list_req":sl_cmd='"sl_cmd":"sl_users_list_req"'; sl_appl_msg=""
+            else:
+                sl_cmd='"sl_cmd":"sl_data_req"'
+                sl_appl_msg='"sl_appl_msg":{'+client_id+'"cmd_name":"'+cmd_name+'","cseq":'+str(self._cseq)+'},"sl_appl_msg_type":"domo",'
+            return "command={"+sl_appl_msg+'"sl_client_id":"'+self.id+'",'+sl_cmd+"}"
+        return self._post(build,cmd_name)
+    def switch(self,act_id:int,status:bool=True,is_light:bool=True)->dict:
+        wanted="1" if status else "0"; cmd="light_switch_req" if is_light else "relay_activation_req"
+        def build():return 'command={"sl_appl_msg":{"act_id":'+str(act_id)+',"client":"'+self.id+'","cmd_name":"'+cmd+'","cseq":'+str(self._cseq)+',"wanted_status":'+wanted+'},"sl_appl_msg_type":"domo","sl_client_id":"'+self.id+'","sl_cmd":"sl_data_req"}'
+        return self._post(build,cmd)
+    def thermo_mode(self,act_id:int,mode:int,temp:float)->dict:
+        if mode not in [0,1,2,3]:raise RequestError
+        value=int(round(temp*10,1))
+        def build():return 'command={"sl_appl_msg":{"act_id":'+str(act_id)+',"client":"'+self.id+'","cmd_name":"thermo_zone_config_req","cseq":'+str(self._cseq)+',"extended_infos":0,"mode":'+str(mode)+',"set_point":'+str(value)+'},"sl_appl_msg_type":"domo","sl_client_id":"'+self.id+'","sl_cmd":"sl_data_req"}'
+        return self._post(build,"thermo_zone_config_req")
+    def change_season(self,season:str)->dict:
+        if season not in ["plant_off","summer","winter"]:raise RequestError
+        def build():return 'command={"sl_appl_msg":{"client":"'+self.id+'","cmd_name":"thermo_season_req","cseq":'+str(self._cseq)+',"season":"'+season+'"},"sl_appl_msg_type":"domo","sl_client_id":"'+self.id+'","sl_cmd":"sl_data_req"}'
+        return self._post(build,"thermo_season_req")
+    def opening(self,act_id:int,action:int)->dict:
+        def build():return 'command={"sl_appl_msg":{"act_id":'+str(act_id)+',"client":"'+self.id+'","cmd_name":"opening_move_req","cseq":'+str(self._cseq)+',"wanted_status":'+str(action)+'},"sl_appl_msg_type":"domo","sl_client_id":"'+self.id+'","sl_cmd":"sl_data_req"}'
+        return self._post(build,"opening_move_req")
