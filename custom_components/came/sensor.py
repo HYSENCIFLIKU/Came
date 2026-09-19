@@ -1,73 +1,25 @@
-"""Platform for light integration."""
-import logging
-
+"""Sensor (analog inputs) platform for the Came Eti Domo integration."""
+from __future__ import annotations
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import Entity
-
-from .eti_domo import Domo
-
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import slugify
 from .const import DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
-
-
-async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
-    """Set up the Hue lights from a config entry."""
-
-    # Get the Domo object
-    hub = hass.data[DOMAIN]["hub"]
-
-    # Retrieve all the sensors from the eti/domo server
-    analogs = (await hass.async_add_executor_job(hub.list_request,Domo.available_commands['analogin']))
-
-    if 'array' in analogs:
-        # Add all the lights as entities
-        async_add_entities(CameHygrometer(hub, sensor) for sensor in analogs['array'])
-
-class CameHygrometer(Entity):
-    """Representation of XBee Pro temperature sensor."""
-
-    def __init__(self, hub: Domo, sensor):
-        """Init switch device."""
-        self.entity_id = "sensor." + sensor['name'].lower().replace(" ", "_") + "_" + str(sensor['act_id'])
-        self._name = sensor['name']
-        self._id = sensor['act_id']
-        self._hub = hub
-        self._value = sensor['value']
-        self._unit_of_measurement = sensor['unit']
-
+from .coordinator import CameCoordinator
+from .entity import CameEntity
+_UNIT_TO_DEVICE_CLASS={"%":SensorDeviceClass.HUMIDITY,"°C":SensorDeviceClass.TEMPERATURE,"C":SensorDeviceClass.TEMPERATURE}
+async def async_setup_entry(hass:HomeAssistant,config_entry:ConfigEntry,async_add_entities:AddEntitiesCallback)->None:
+    coordinator:CameCoordinator=hass.data[DOMAIN][config_entry.entry_id]
+    async_add_entities(CameAnalogSensor(coordinator,item) for item in coordinator.data.get("analogin",{}).values())
+class CameAnalogSensor(CameEntity,SensorEntity):
+    _attr_state_class=SensorStateClass.MEASUREMENT
+    def __init__(self,coordinator:CameCoordinator,item:dict)->None:
+        super().__init__(coordinator,"analogin",item["act_id"])
+        object_id=item["name"].lower().replace(" ","_")+"_"+str(item["act_id"])
+        self.entity_id="sensor."+slugify(object_id); self._attr_unique_id="sensor."+object_id; self._attr_name=item["name"]
+        unit=item.get("unit"); self._attr_native_unit_of_measurement=unit; self._attr_device_class=_UNIT_TO_DEVICE_CLASS.get(unit)
     @property
-    def unique_id(self):
-        """Return unique ID for this device."""
-        return self.entity_id
-
-    @property
-    def name(self):
-        """Return the name of the sensor."""
-        return self._name
-
-    @property
-    def state(self):
-        """Return the state of the sensor. (current value)"""
-        return self._value
-
-    @property
-    def unit_of_measurement(self):
-        """Return the unit of measurement the value is expressed in."""
-        return self._unit_of_measurement
-
-    def update(self):
-        """Get the latest data."""
-
-        # Send a keep alive request
-        self._hub.keep_alive()
-
-        # Retrieve all the sensors from the eti/domo server
-        analogs = self._hub.list_request(Domo.available_commands['analogin'])['array']
-
-        # Search for the sensor
-        for sensor in analogs:
-            if sensor['act_id'] == self._id:
-                # update the value
-                self._value = sensor['value']
-
+    def native_value(self):
+        item=self._item
+        return None if item is None else item.get("value")
