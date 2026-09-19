@@ -1,96 +1,33 @@
-"""Component to interface with switches that can be controlled remotely."""
+"""Switch platform for the Came Eti Domo integration."""
+from __future__ import annotations
 import logging
-
-from homeassistant.core import HomeAssistant
+from typing import Any
 from homeassistant.components.switch import SwitchEntity
-
-from .eti_domo import Domo, ServerNotFound
-
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import slugify
 from .const import DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
-
-async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
-    """Set up a config entry."""
-
-    # Get the Domo object
-    hub = hass.data[DOMAIN]["hub"]
-    # Retrieve the list of relays
-    relays = (await hass.async_add_executor_job(hub.list_request, Domo.available_commands['relays']))['array']
-
-    # Add all the relays
-    async_add_entities(Relay(hub, relay) for relay in relays)
-
-
-#async def async_unload_entry(hass, entry):
-#    """Unload a config entry."""
-#    return await hass.data[DOMAIN].async_unload_entry(entry)
-
-
-class Relay(SwitchEntity):
-    """Representation of a switch."""
-
-    def __init__(self, hub: Domo, relay):
-        """Init switch device."""
-        self.entity_id = "switch." + relay['name'].lower().replace(" ", "_") + "_" + str(relay['act_id'])
-        self._name = relay['name']
-        self._id = relay['act_id']
-        self._hub = hub
-        self._status = relay['status']
-
+from .coordinator import CameCoordinator
+from .entity import CameEntity
+_LOGGER=logging.getLogger(__name__)
+async def async_setup_entry(hass:HomeAssistant,config_entry:ConfigEntry,async_add_entities:AddEntitiesCallback)->None:
+    coordinator:CameCoordinator=hass.data[DOMAIN][config_entry.entry_id]
+    async_add_entities(Relay(coordinator,item) for item in coordinator.data.get("relays",{}).values())
+class Relay(CameEntity,SwitchEntity):
+    def __init__(self,coordinator:CameCoordinator,item:dict)->None:
+        super().__init__(coordinator,"relays",item["act_id"])
+        object_id=item["name"].lower().replace(" ","_")+"_"+str(item["act_id"])
+        self.entity_id="switch."+slugify(object_id); self._attr_unique_id="switch."+object_id; self._attr_name=item["name"]
     @property
-    def unique_id(self):
-        """Return unique ID for this device."""
-        return self.entity_id
-
-    @property
-    def name(self):
-        """Return the display name of this light."""
-        return self._name
-
-    @property
-    def is_on(self):
-        """Return true if switch is on."""
-        return self._status
-
-
-    def update(self):
-        """Fetch new state data for this relay.
-        This is the only method that should fetch new data for Home Assistant.
-        """
-
-        # Send a keep alive request
-        self._hub.keep_alive()
-
-        # Retrieve the list of relays
-        relays = self._hub.list_request(Domo.available_commands['relays'])['array']
-
-        # Search for the relay
-        for relay in relays:
-            if relay['act_id'] == self._id:
-                # update the status
-                self._status = relay['status']
-
-    def turn_on(self, **kwargs):
-        """Turn the switch on."""
-
-        # Send a keep alive request
-        self._hub.keep_alive()
-
-        # Turn on the light
-        self._hub.switch(self._id, status=True, is_light=False)
-
-        # Update the status
-        self.update()
-
-    def turn_off(self, **kwargs):
-        """Turn the device off."""
-
-        # Send a keep alive request
-        self._hub.keep_alive()
-
-        # Turn on the light
-        self._hub.switch(self._id, status=False, is_light=False)
-
-        # Update the status
-        self.update()
+    def is_on(self)->bool:
+        item=self._item
+        return bool(item and item.get("status"))
+    async def async_turn_on(self,**kwargs:Any)->None:
+        self._optimistic_update(status=1)
+        try: await self.hass.async_add_executor_job(self.coordinator.hub.switch,self._id,True,False)
+        except Exception: _LOGGER.exception("Failed to turn on CAME relay %s",self._id); raise
+    async def async_turn_off(self,**kwargs:Any)->None:
+        self._optimistic_update(status=0)
+        try: await self.hass.async_add_executor_job(self.coordinator.hub.switch,self._id,False,False)
+        except Exception: _LOGGER.exception("Failed to turn off CAME relay %s",self._id); raise
