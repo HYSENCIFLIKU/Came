@@ -1,245 +1,76 @@
-"""Platform for light integration."""
-import logging
-
-
-from homeassistant.components.climate.const import (
-    HVAC_MODE_AUTO,
-    HVAC_MODE_COOL,
-    HVAC_MODE_HEAT,
-    HVAC_MODE_OFF,
-    SUPPORT_TARGET_TEMPERATURE,
-    DEFAULT_MIN_TEMP,
-    DEFAULT_MAX_TEMP
-)
-from homeassistant.const import (
-    ATTR_TEMPERATURE,
-    PRECISION_TENTHS,
-    TEMP_CELSIUS,
-)
-
+"""Climate platform for the Came Eti Domo integration."""
+from __future__ import annotations
+from typing import Any
+from homeassistant.components.climate import ClimateEntity, ClimateEntityFeature
+from homeassistant.components.climate.const import HVACMode
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
-from homeassistant.components.climate import ClimateEntity
-from typing import List, Optional
-
-from .eti_domo import Domo
-
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import slugify
 from .const import DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
-
-
-async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
-    """Set up the Hue lights from a config entry."""
-
-    # Get the Domo object
-    hub = hass.data[DOMAIN]["hub"]
-
-    # Retrieve all the thermo regulation from the eti/domo server
-    thermos = (await hass.async_add_executor_job(hub.list_request, Domo.available_commands['thermoregulation']))
-    if 'array' in thermos:
-        # Add all the devices as entities
-        async_add_entities(CameClimate(hub, climate) for climate in thermos['array'])
-
-class CameClimate(ClimateEntity):
-    """Representation of XBee Pro temperature sensor."""
-
-    def __init__(self, hub: Domo, climate):
-        """Init switch device."""
-        self.entity_id = "climate." + climate['name'].lower().replace(" ", "_") + "_" + str(climate['act_id'])
-        self._name = climate['name']
-        self._id = climate['act_id']
-        self._hub = hub
-        self._status = climate['status']
-        self._temp = float(climate['temp']) / 10.0
-        self._mode = climate['mode']
-        self._set_point = float(climate['set_point']) / 10.0
-        self._season = climate['season']
-
-        # check if the thermo zone has a hygrometer
-        if 'hygro' in climate:
-            self._humidity = climate['hygro']
-        else:
-            self._humidity = None
-
+from .coordinator import CameCoordinator
+from .entity import CameEntity
+async def async_setup_entry(hass:HomeAssistant,config_entry:ConfigEntry,async_add_entities:AddEntitiesCallback)->None:
+    coordinator:CameCoordinator=hass.data[DOMAIN][config_entry.entry_id]
+    async_add_entities(CameClimate(coordinator,item) for item in coordinator.data.get("thermo",{}).values())
+class CameClimate(CameEntity,ClimateEntity):
+    _attr_temperature_unit=UnitOfTemperature.CELSIUS
+    _attr_supported_features=ClimateEntityFeature.TARGET_TEMPERATURE|ClimateEntityFeature.TURN_ON|ClimateEntityFeature.TURN_OFF
+    _attr_hvac_modes=[HVACMode.OFF,HVACMode.AUTO,HVACMode.HEAT,HVACMode.COOL]
+    _attr_min_temp=5.0; _attr_max_temp=35.0; _attr_target_temperature_step=0.1
+    def __init__(self,coordinator:CameCoordinator,item:dict)->None:
+        super().__init__(coordinator,"thermo",item["act_id"])
+        object_id=item["name"].lower().replace(" ","_")+"_"+str(item["act_id"])
+        self.entity_id="climate."+slugify(object_id); self._attr_unique_id="climate."+object_id; self._attr_name=item["name"]
+    def _temp(self,key):
+        item=self._item
+        if not item or item.get(key) is None:return None
+        try:
+            value=float(item[key])
+            return value/10 if abs(value)>100 else value
+        except (TypeError,ValueError):return None
     @property
-    def unique_id(self):
-        """Return unique ID for this device."""
-        return self.entity_id
-
+    def current_temperature(self):return self._temp("temp")
     @property
-    def name(self):
-        """Return the name of the sensor."""
-        return self._name
-
-    def update(self):
-        """Get the latest data."""
-
-        # Send a keep alive request
-        self._hub.keep_alive()
-
-        # Retrieve all the sensors from the eti/domo server
-        thermos = self._hub.list_request(Domo.available_commands['thermoregulation'])['array']
-
-        # Search for the sensor
-        for climate in thermos:
-            if climate['act_id'] == self._id:
-                # update the value
-                self._status = climate['status']
-                self._temp = float(climate['temp']) / 10.0
-                self._mode = climate['mode']
-                self._set_point = float(climate['set_point']) / 10.0
-                self._season = climate['season']
-                # check if the thermo zone has a hygrometer
-                if 'hygro' in climate:
-                    self._humidity = climate['hygro']
-                else:
-                    self._humidity = None
-
+    def target_temperature(self):return self._temp("set_point")
     @property
-    def precision(self) -> float:
-        """Return the precision of the system."""
-        return PRECISION_TENTHS
-
+    def current_humidity(self):
+        item=self._item
+        return None if not item else item.get("hygro")
     @property
-    def temperature_unit(self) -> str:
-        """Return the unit of measurement used by the platform."""
-        return TEMP_CELSIUS
-
-    @property
-    def current_humidity(self) -> Optional[int]:
-        """Return the current humidity."""
-        return self._humidity
-
-    @property
-    def hvac_mode(self) -> str:
-        """Return current hvac operation ie. heat, cool mode.
-
-        Need to be one of HVAC_MODE_*.
-        """
-        return Domo.thermo_status[self._mode]
-
-    @property
-    def hvac_modes(self) -> List[str]:
-        """Return the list of available hvac operation modes.
-
-        Need to be a subset of HVAC_MODES.
-        """
-        return [HVAC_MODE_OFF, HVAC_MODE_AUTO, HVAC_MODE_COOL, HVAC_MODE_HEAT]
-
-
-    @property
-    def hvac_action(self) -> Optional[str]:
-        """Return the current running hvac operation if supported.
-
-        Need to be one of CURRENT_HVAC_*.
-        """
-        return None
-
-    @property
-    def current_temperature(self) -> Optional[float]:
-        """Return the current temperature."""
-        return self._temp
-
-    @property
-    def target_temperature(self) -> Optional[float]:
-        """Return the temperature we try to reach."""
-        return self._set_point
-
-    @property
-    def target_temperature_step(self) -> Optional[float]:
-        """Return the supported step of target temperature."""
-        return 0.1
-
-    @property
-    def target_temperature_high(self) -> Optional[float]:
-        """Return the highbound target temperature we try to reach.
-
-        Requires SUPPORT_TARGET_TEMPERATURE_RANGE.
-        """
-        return 35.0
-
-    @property
-    def target_temperature_low(self) -> Optional[float]:
-        """Return the lowbound target temperature we try to reach.
-
-        Requires SUPPORT_TARGET_TEMPERATURE_RANGE.
-        """
-        raise 5.0
-
-    def set_temperature(self, **kwargs) -> None:
-        """Set new target temperature."""
-        if ATTR_TEMPERATURE in kwargs:
-            self._hub.thermo_mode(self._id, self._mode, kwargs[ATTR_TEMPERATURE])
-
-        # update infos about the climate device
-        self.update()
-
-    def set_hvac_mode(self, hvac_mode: str) -> None:
-        """Set new target hvac mode."""
-
-        # Check if there is a need to change season
-        if hvac_mode == HVAC_MODE_COOL:
-            # change season if necessary
-            if not self._season == "summer":
-                self._hub.change_season(Domo.seasons["summer"])
-            # Turn on the heater
-            self.turn_on()
-        elif hvac_mode == HVAC_MODE_HEAT:
-            # change season if necessary
-            if not self._season == "winter":
-                self._hub.change_season(Domo.seasons["winter"])
-            # Turn on the heater
-            self.turn_on()
-        else:
-            # default to auto
-            value = 2
-            # Check if it is to be set to auto or off
-            if hvac_mode == HVAC_MODE_AUTO:
-                value = 2
-            elif hvac_mode == HVAC_MODE_OFF:
-                value = 0
-            # change mode
-            self._hub.thermo_mode(self._id, value, self._set_point)
-
-        # update infos about the climate device
-        self.update()
-
-    def turn_on(self) -> None:
-        """Turn the entity on."""
-
-        # Send a keep alive request
-        self._hub.keep_alive()
-
-        # Turn on the climate
-        self._hub.thermo_mode(self._id, 1, self._set_point)
-
-        # update infos about the climate device
-        self.update()
-
-    def turn_off(self) -> None:
-        """Turn the entity off."""
-
-        # Send a keep alive request
-        self._hub.keep_alive()
-
-        # Turn off the climate with default 20 degrees celsius
-        self._hub.thermo_mode(self._id, 0, self._set_point)
-
-        # update infos about the climate device
-        self.update()
-
-    @property
-    def supported_features(self) -> int:
-        """Return the list of supported features."""
-        return SUPPORT_TARGET_TEMPERATURE
-
-    @property
-    def min_temp(self) -> float:
-        """Return the minimum temperature."""
-        return DEFAULT_MIN_TEMP
-
-    @property
-    def max_temp(self) -> float:
-        """Return the maximum temperature."""
-        return DEFAULT_MAX_TEMP
-
+    def hvac_mode(self):
+        item=self._item
+        if not item:return HVACMode.OFF
+        mode=item.get("mode")
+        if mode in (0,"0","off"):return HVACMode.OFF
+        if mode in (2,"2","auto"):return HVACMode.AUTO
+        return HVACMode.COOL if item.get("season") in ("summer","estate",1,"1") else HVACMode.HEAT
+    async def async_set_temperature(self,**kwargs:Any)->None:
+        temperature=kwargs.get(ATTR_TEMPERATURE)
+        if temperature is None:return
+        mode=(self._item or {}).get("mode",1)
+        await self.hass.async_add_executor_job(self.coordinator.hub.thermo_mode,self._id,mode,temperature)
+        self._optimistic_update(set_point=temperature)
+        await self.coordinator.async_request_refresh()
+    async def async_set_hvac_mode(self,hvac_mode:HVACMode)->None:
+        target=self.target_temperature or 20.0
+        if hvac_mode==HVACMode.OFF:
+            await self.hass.async_add_executor_job(self.coordinator.hub.thermo_mode,self._id,0,target); self._optimistic_update(mode=0)
+        elif hvac_mode==HVACMode.AUTO:
+            await self.hass.async_add_executor_job(self.coordinator.hub.thermo_mode,self._id,2,target); self._optimistic_update(mode=2)
+        elif hvac_mode==HVACMode.HEAT:
+            await self.hass.async_add_executor_job(self.coordinator.hub.change_season,"winter")
+            await self.hass.async_add_executor_job(self.coordinator.hub.thermo_mode,self._id,1,target); self._optimistic_update(mode=1,season="winter")
+        elif hvac_mode==HVACMode.COOL:
+            await self.hass.async_add_executor_job(self.coordinator.hub.change_season,"summer")
+            await self.hass.async_add_executor_job(self.coordinator.hub.thermo_mode,self._id,1,target); self._optimistic_update(mode=1,season="summer")
+        await self.coordinator.async_request_refresh()
+    async def async_turn_on(self)->None:
+        target=self.target_temperature or 20.0
+        await self.hass.async_add_executor_job(self.coordinator.hub.thermo_mode,self._id,1,target); self._optimistic_update(mode=1)
+        await self.coordinator.async_request_refresh()
+    async def async_turn_off(self)->None:
+        target=self.target_temperature or 20.0
+        await self.hass.async_add_executor_job(self.coordinator.hub.thermo_mode,self._id,0,target); self._optimistic_update(mode=0)
+        await self.coordinator.async_request_refresh()

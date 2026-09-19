@@ -1,18 +1,12 @@
 {
   "domain": "came",
   "name": "Came Eti Domo",
+  "codeowners": ["@andrea-michielan", "@PiotrMachowski", "@HYSENCIFLIKU"],
   "config_flow": true,
-  "documentation": "https://github.com/PiotrMachowski/eti_domo-hass-integration",
-  "issue_tracker": "https://github.com/PiotrMachowski/eti_domo-hass-integration/issues",
+  "documentation": "https://github.com/HYSENCIFLIKU/Came",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/HYSENCIFLIKU/Came/issues",
   "requirements": [],
-  "ssdp": [],
-  "zeroconf": [],
-  "homekit": {},
-  "dependencies": [],
-  "codeowners": [
-    "@andrea-michielan",
-    "@PiotrMachowski"
-  ],
-  "version": "v0.0.2",
-  "min_homeassistant_core_version": "2023.12.0"
+  "version": "1.0.3"
 }
